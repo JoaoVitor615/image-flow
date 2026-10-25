@@ -14,10 +14,10 @@ func main() {
 		port = "8080"
 	}
 
-	router := internal.SetupRouter()
+	server := internal.NewServer()
 
 	log.Printf("API server running on port %s", port)
-	if err := http.ListenAndServe(":"+port, router); err != nil {
+	if err := http.ListenAndServe(":"+port, server.Routes()); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
