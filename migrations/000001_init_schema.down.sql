@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS image_variants;
+
+DROP TABLE IF EXISTS jobs;
+
+DROP TABLE IF EXISTS images;
