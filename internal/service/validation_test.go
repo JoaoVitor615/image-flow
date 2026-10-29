@@ -17,12 +17,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// helper to create a valid in-memory PNG image
+// helper to generate valid PNG bytes in memory
 func createTestPNG(width, height int) *bytes.Reader {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	for x := 0; x < width; x++ {
 		for y := 0; y < height; y++ {
-			img.Set(x, y, color.RGBA{R: 255, A: 255})
+			img.Set(x, y, color.RGBA{R: 255, G: 0, B: 0, A: 255})
 		}
 	}
 	var buf bytes.Buffer
@@ -30,20 +30,19 @@ func createTestPNG(width, height int) *bytes.Reader {
 	return bytes.NewReader(buf.Bytes())
 }
 
-// helper to create a valid in-memory JPEG image
+// helper to generate valid JPEG bytes in memory
 func createTestJPEG(width, height int) *bytes.Reader {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	for x := 0; x < width; x++ {
 		for y := 0; y < height; y++ {
-			img.Set(x, y, color.RGBA{R: 200, G: 100, B: 50, A: 255})
+			img.Set(x, y, color.RGBA{R: 0, G: 255, B: 0, A: 255})
 		}
 	}
 	var buf bytes.Buffer
-	_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 80})
+	_ = jpeg.Encode(&buf, img, nil)
 	return bytes.NewReader(buf.Bytes())
 }
 
-// mock repository for testing ImageService persistence
 type mockRepository struct {
 	createdImage *domain.Image
 	createdJob   *domain.Job
@@ -86,8 +85,21 @@ func (m *mockRepository) GetVariantsByImageID(ctx context.Context, imageID uuid.
 	return m.variants, nil
 }
 
+type mockProducer struct {
+	publishedEvent *domain.ImageUploadedEvent
+	publishErr     error
+}
+
+func (m *mockProducer) PublishImageUploaded(ctx context.Context, event domain.ImageUploadedEvent) error {
+	if m.publishErr != nil {
+		return m.publishErr
+	}
+	m.publishedEvent = &event
+	return nil
+}
+
 func TestValidationPipeline(t *testing.T) {
-	svc := service.NewImageService(nil, nil)
+	svc := service.NewImageService(nil, nil, nil)
 	ctx := context.Background()
 
 	t.Run("should succeed with a valid PNG image", func(t *testing.T) {
@@ -102,19 +114,18 @@ func TestValidationPipeline(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected nil error, got %v", err)
 		}
-
 		if input.DetectedFormat != "png" {
-			t.Fatalf("expected format 'png', got '%s'", input.DetectedFormat)
+			t.Fatalf("expected detected format 'png', got '%s'", input.DetectedFormat)
 		}
 		if input.Width != 100 || input.Height != 100 {
-			t.Fatalf("expected dimensions 100x100, got %dx%d", input.Width, input.Height)
+			t.Fatalf("expected 100x100 dimensions, got %dx%d", input.Width, input.Height)
 		}
 	})
 
 	t.Run("should succeed with a valid JPEG image", func(t *testing.T) {
 		reader := createTestJPEG(200, 150)
 		input := &service.UploadInput{
-			Filename: "photo.jpg",
+			Filename: "sample.jpg",
 			Size:     int64(reader.Len()),
 			Body:     reader,
 		}
@@ -123,21 +134,19 @@ func TestValidationPipeline(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected nil error, got %v", err)
 		}
-
 		if input.DetectedFormat != "jpeg" {
-			t.Fatalf("expected format 'jpeg', got '%s'", input.DetectedFormat)
+			t.Fatalf("expected detected format 'jpeg', got '%s'", input.DetectedFormat)
 		}
 		if input.Width != 200 || input.Height != 150 {
-			t.Fatalf("expected dimensions 200x150, got %dx%d", input.Width, input.Height)
+			t.Fatalf("expected 200x150 dimensions, got %dx%d", input.Width, input.Height)
 		}
 	})
 
-	t.Run("should fail when file size exceeds maximum limit", func(t *testing.T) {
-		reader := createTestPNG(20, 20)
+	t.Run("should fail when file size exceeds 10MB limit", func(t *testing.T) {
 		input := &service.UploadInput{
-			Filename: "large.png",
-			Size:     service.MaxFileSizeBytes + 1,
-			Body:     reader,
+			Filename: "huge.png",
+			Size:     11 * 1024 * 1024,
+			Body:     bytes.NewReader([]byte("dummy content")),
 		}
 
 		err := svc.ValidateUpload(ctx, input)
@@ -146,12 +155,12 @@ func TestValidationPipeline(t *testing.T) {
 		}
 	})
 
-	t.Run("should fail with unsupported content type", func(t *testing.T) {
-		fakeContent := []byte("plain text content pretending to be an image")
+	t.Run("should fail with unsupported content type (e.g. plain text)", func(t *testing.T) {
+		textContent := []byte("plain text content pretending to be an image")
 		input := &service.UploadInput{
 			Filename: "fake.txt",
-			Size:     int64(len(fakeContent)),
-			Body:     bytes.NewReader(fakeContent),
+			Size:     int64(len(textContent)),
+			Body:     bytes.NewReader(textContent),
 		}
 
 		err := svc.ValidateUpload(ctx, input)
@@ -160,10 +169,10 @@ func TestValidationPipeline(t *testing.T) {
 		}
 	})
 
-	t.Run("should fail with dimensions smaller than minimum allowed", func(t *testing.T) {
-		reader := createTestPNG(5, 5) // MinImageDimension is 10
+	t.Run("should fail when image width is below minimum 10px", func(t *testing.T) {
+		reader := createTestPNG(8, 50)
 		input := &service.UploadInput{
-			Filename: "tiny.png",
+			Filename: "small.png",
 			Size:     int64(reader.Len()),
 			Body:     reader,
 		}
@@ -174,10 +183,25 @@ func TestValidationPipeline(t *testing.T) {
 		}
 	})
 
-	t.Run("should fail with corrupted image body", func(t *testing.T) {
-		corrupted := append([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, []byte("not_a_real_png")...)
+	t.Run("should fail when image height is below minimum 10px", func(t *testing.T) {
+		reader := createTestPNG(50, 8)
 		input := &service.UploadInput{
-			Filename: "corrupted.png",
+			Filename: "small_height.png",
+			Size:     int64(reader.Len()),
+			Body:     reader,
+		}
+
+		err := svc.ValidateUpload(ctx, input)
+		if !errors.Is(err, service.ErrInvalidDimensions) {
+			t.Fatalf("expected ErrInvalidDimensions, got %v", err)
+		}
+	})
+
+	t.Run("should fail with corrupted image payload", func(t *testing.T) {
+		// JPEG magic bytes followed by garbage
+		corrupted := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x00, 0x01}
+		input := &service.UploadInput{
+			Filename: "corrupt.jpg",
 			Size:     int64(len(corrupted)),
 			Body:     bytes.NewReader(corrupted),
 		}
@@ -192,14 +216,15 @@ func TestValidationPipeline(t *testing.T) {
 func TestImageService_Upload(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("should successfully save to storage and persist image and job", func(t *testing.T) {
+	t.Run("should successfully save to storage, persist image and job, and publish event", func(t *testing.T) {
 		strg, err := storage.NewDiskStorage(t.TempDir())
 		if err != nil {
 			t.Fatalf("failed to create test storage: %v", err)
 		}
 
 		repo := &mockRepository{}
-		svc := service.NewImageService(strg, repo)
+		prod := &mockProducer{}
+		svc := service.NewImageService(strg, repo, prod)
 
 		reader := createTestPNG(120, 80)
 		input := &service.UploadInput{
@@ -246,6 +271,23 @@ func TestImageService_Upload(t *testing.T) {
 		if repo.createdJob.Status != "pending" {
 			t.Fatalf("expected job status 'pending', got '%s'", repo.createdJob.Status)
 		}
+
+		// Verify event was published to message queue
+		if prod.publishedEvent == nil {
+			t.Fatal("expected event to be published to producer")
+		}
+		if prod.publishedEvent.ImageID != repo.createdImage.ID {
+			t.Fatalf("expected event ImageID %s, got %s", repo.createdImage.ID, prod.publishedEvent.ImageID)
+		}
+		if prod.publishedEvent.JobID != repo.createdJob.ID {
+			t.Fatalf("expected event JobID %s, got %s", repo.createdJob.ID, prod.publishedEvent.JobID)
+		}
+		if prod.publishedEvent.EventType != "image.uploaded" {
+			t.Fatalf("expected event type 'image.uploaded', got '%s'", prod.publishedEvent.EventType)
+		}
+		if prod.publishedEvent.OriginalFormat != "png" {
+			t.Fatalf("expected event format 'png', got '%s'", prod.publishedEvent.OriginalFormat)
+		}
 	})
 
 	t.Run("should fail when database image insert fails", func(t *testing.T) {
@@ -253,7 +295,7 @@ func TestImageService_Upload(t *testing.T) {
 		repo := &mockRepository{
 			createImgErr: errors.New("db error"),
 		}
-		svc := service.NewImageService(strg, repo)
+		svc := service.NewImageService(strg, repo, nil)
 
 		reader := createTestPNG(50, 50)
 		input := &service.UploadInput{
@@ -273,7 +315,7 @@ func TestImageService_Upload(t *testing.T) {
 		repo := &mockRepository{
 			createJobErr: errors.New("db error"),
 		}
-		svc := service.NewImageService(strg, repo)
+		svc := service.NewImageService(strg, repo, nil)
 
 		reader := createTestPNG(50, 50)
 		input := &service.UploadInput{
@@ -284,7 +326,28 @@ func TestImageService_Upload(t *testing.T) {
 
 		_, err := svc.Upload(ctx, input)
 		if err == nil {
-			t.Fatal("expected error from failed job insert, got nil")
+			t.Fatal("expected error from failed db insert, got nil")
+		}
+	})
+
+	t.Run("should fail when event producer fails", func(t *testing.T) {
+		strg, _ := storage.NewDiskStorage(t.TempDir())
+		repo := &mockRepository{}
+		prod := &mockProducer{
+			publishErr: errors.New("kafka unavailable"),
+		}
+		svc := service.NewImageService(strg, repo, prod)
+
+		reader := createTestPNG(50, 50)
+		input := &service.UploadInput{
+			Filename: "product.png",
+			Size:     int64(reader.Len()),
+			Body:     reader,
+		}
+
+		_, err := svc.Upload(ctx, input)
+		if err == nil {
+			t.Fatal("expected error when event producer fails, got nil")
 		}
 	})
 }
@@ -336,7 +399,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 
 	t.Run("should return original file when no format is specified", func(t *testing.T) {
 		repo := &mockRepository{storedImage: sampleRecord}
-		svc := service.NewImageService(strg, repo)
+		svc := service.NewImageService(strg, repo, nil)
 
 		rc, mimeType, err := svc.GetImageFile(ctx, imgID, "")
 		if err != nil {
@@ -358,7 +421,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 			storedImage: sampleRecord,
 			variants:    sampleVariants,
 		}
-		svc := service.NewImageService(strg, repo)
+		svc := service.NewImageService(strg, repo, nil)
 
 		rc, mimeType, err := svc.GetImageFile(ctx, imgID, "webp")
 		if err != nil {
@@ -380,7 +443,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 			storedImage: sampleRecord,
 			variants:    sampleVariants, // only has webp, not jpeg
 		}
-		svc := service.NewImageService(strg, repo)
+		svc := service.NewImageService(strg, repo, nil)
 
 		_, _, err := svc.GetImageFile(ctx, imgID, "jpeg")
 		if !errors.Is(err, service.ErrVariantNotFound) {
@@ -390,7 +453,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 
 	t.Run("should return error when image is not found in database", func(t *testing.T) {
 		repo := &mockRepository{storedImage: nil}
-		svc := service.NewImageService(strg, repo)
+		svc := service.NewImageService(strg, repo, nil)
 
 		_, _, err := svc.GetImageFile(ctx, uuid.New(), "")
 		if !errors.Is(err, service.ErrNotFound) {

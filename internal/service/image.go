@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/JoaoVitor615/image-flow/internal/domain"
 	"github.com/JoaoVitor615/image-flow/internal/storage"
@@ -19,6 +20,11 @@ type Repository interface {
 	GetVariantsByImageID(ctx context.Context, imageID uuid.UUID) ([]domain.ImageVariant, error)
 }
 
+// EventProducer defines publishing capabilities for domain events
+type EventProducer interface {
+	PublishImageUploaded(ctx context.Context, event domain.ImageUploadedEvent) error
+}
+
 // UploadResult contains the generated identifiers and initial status of an upload
 type UploadResult struct {
 	ImageID uuid.UUID `json:"image_id"`
@@ -26,18 +32,20 @@ type UploadResult struct {
 	Status  string    `json:"status"`
 }
 
-// ImageService orchestrates business logic, storage, and persistence for image uploads
+// ImageService orchestrates business logic, storage, persistence, and event dispatch for images
 type ImageService struct {
-	storage storage.Storage
-	repo    Repository
-	rules   []ValidationRule
+	storage  storage.Storage
+	repo     Repository
+	producer EventProducer
+	rules    []ValidationRule
 }
 
-// NewImageService initializes an ImageService configured with storage, repository, and validation rules
-func NewImageService(storage storage.Storage, repo Repository) *ImageService {
+// NewImageService initializes an ImageService configured with storage, repository, producer, and validation rules
+func NewImageService(storage storage.Storage, repo Repository, producer EventProducer) *ImageService {
 	return &ImageService{
-		storage: storage,
-		repo:    repo,
+		storage:  storage,
+		repo:     repo,
+		producer: producer,
 		rules: []ValidationRule{
 			ValidateFileSize,
 			ValidateContentType,
@@ -56,23 +64,23 @@ func (s *ImageService) ValidateUpload(ctx context.Context, input *UploadInput) e
 	return nil
 }
 
-// Upload validates, saves original file to disk, and persists image and job records
+// Upload validates, saves original file to disk, persists image and job records, and publishes the upload event
 func (s *ImageService) Upload(ctx context.Context, input *UploadInput) (*UploadResult, error) {
-	// 1. Run all validations (size, content type, dimensions)
+	// Run all validations (size, content type, dimensions)
 	if err := s.ValidateUpload(ctx, input); err != nil {
 		return nil, err
 	}
 
-	// 2. Generate a secure, unique filename (UUID + detected format)
+	// Generate a secure, unique filename (UUID + detected format)
 	filename := fmt.Sprintf("%s.%s", uuid.New().String(), input.DetectedFormat)
 
-	// 3. Save original file to persistent storage
+	// Save original file to persistent storage
 	savedPath, err := s.storage.SaveOriginal(filename, input.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to save original image to storage: %w", err)
 	}
 
-	// 4. Persist image metadata into PostgreSQL
+	// Persist image metadata into PostgreSQL
 	imageRecord := &domain.Image{
 		OriginalPath:   savedPath,
 		OriginalFormat: input.DetectedFormat,
@@ -84,7 +92,7 @@ func (s *ImageService) Upload(ctx context.Context, input *UploadInput) (*UploadR
 		return nil, fmt.Errorf("failed to persist image in database: %w", err)
 	}
 
-	// 5. Persist processing job with initial 'pending' status
+	// Persist processing job with initial 'pending' status
 	jobRecord := &domain.Job{
 		ImageID:     imageRecord.ID,
 		Status:      "pending",
@@ -93,6 +101,25 @@ func (s *ImageService) Upload(ctx context.Context, input *UploadInput) (*UploadR
 	}
 	if err := s.repo.CreateJob(ctx, jobRecord); err != nil {
 		return nil, fmt.Errorf("failed to persist processing job in database: %w", err)
+	}
+
+	// Publish upload event to message broker for background variant processing
+	if s.producer != nil {
+
+		event := domain.ImageUploadedEvent{
+			EventID:        uuid.New().String(),
+			EventType:      "image.uploaded",
+			Version:        "v1",
+			ImageID:        imageRecord.ID,
+			JobID:          jobRecord.ID,
+			OriginalPath:   savedPath,
+			OriginalFormat: input.DetectedFormat,
+			CreatedAt:      time.Now().UTC(),
+		}
+
+		if err := s.producer.PublishImageUploaded(ctx, event); err != nil {
+			return nil, fmt.Errorf("failed to publish image uploaded event: %w", err)
+		}
 	}
 
 	return &UploadResult{
