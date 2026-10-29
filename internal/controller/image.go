@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"io"
+	"log"
 	"net/http"
 
 	"github.com/JoaoVitor615/image-flow/internal/repository"
@@ -55,6 +56,7 @@ func (c *ImageController) Upload(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, service.ErrInvalidImage), errors.Is(err, service.ErrInvalidDimensions):
 			SendError(w, http.StatusUnprocessableEntity, err.Error())
 		default:
+			log.Printf("Upload failed: %v", err)
 			SendError(w, http.StatusInternalServerError, "failed to process image upload")
 		}
 		return
