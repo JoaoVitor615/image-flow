@@ -2,7 +2,9 @@ package controller_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -13,8 +15,32 @@ import (
 	"testing"
 
 	"github.com/JoaoVitor615/image-flow/internal/controller"
+	"github.com/JoaoVitor615/image-flow/internal/domain"
 	"github.com/JoaoVitor615/image-flow/internal/service"
+	"github.com/JoaoVitor615/image-flow/internal/storage"
+	"github.com/google/uuid"
 )
+
+type mockRepository struct {
+	createImageErr error
+	createJobErr   error
+}
+
+func (m *mockRepository) CreateImage(ctx context.Context, img *domain.Image) error {
+	if m.createImageErr != nil {
+		return m.createImageErr
+	}
+	img.ID = uuid.New()
+	return nil
+}
+
+func (m *mockRepository) CreateJob(ctx context.Context, job *domain.Job) error {
+	if m.createJobErr != nil {
+		return m.createJobErr
+	}
+	job.ID = uuid.New()
+	return nil
+}
 
 // helper to build a multipart request buffer with a specific field and file payload
 func createMultipartRequest(fieldName, filename string, content []byte) (*bytes.Buffer, string, error) {
@@ -51,10 +77,16 @@ func generatePNGBytes(width, height int) []byte {
 }
 
 func TestImageController_Upload(t *testing.T) {
-	imageService := service.NewImageService(nil, nil)
+	tempStorage, err := storage.NewDiskStorage(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create temp storage: %v", err)
+	}
+
+	repo := &mockRepository{}
+	imageService := service.NewImageService(tempStorage, repo)
 	ctrl := controller.NewImageController(imageService)
 
-	t.Run("should return 200 OK when uploading a valid PNG image", func(t *testing.T) {
+	t.Run("should return 202 Accepted when uploading a valid PNG image", func(t *testing.T) {
 		pngBytes := generatePNGBytes(50, 50)
 		body, contentType, err := createMultipartRequest("image", "avatar.png", pngBytes)
 		if err != nil {
@@ -67,8 +99,8 @@ func TestImageController_Upload(t *testing.T) {
 
 		ctrl.Upload(rec, req)
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected status 202, got %d. Body: %s", rec.Code, rec.Body.String())
 		}
 
 		var res controller.APIResponse
@@ -81,11 +113,11 @@ func TestImageController_Upload(t *testing.T) {
 		}
 
 		data := res.Data.(map[string]any)
-		if data["format"] != "png" {
-			t.Fatalf("expected format 'png', got '%v'", data["format"])
+		if data["image_id"] == "" || data["job_id"] == "" {
+			t.Fatalf("expected non-empty image_id and job_id, got %v", data)
 		}
-		if int(data["width"].(float64)) != 50 || int(data["height"].(float64)) != 50 {
-			t.Fatalf("expected dimensions 50x50, got %vx%v", data["width"], data["height"])
+		if data["status"] != "pending" {
+			t.Fatalf("expected status 'pending', got '%v'", data["status"])
 		}
 	})
 
@@ -103,7 +135,6 @@ func TestImageController_Upload(t *testing.T) {
 
 	t.Run("should return 400 Bad Request when image field is missing", func(t *testing.T) {
 		pngBytes := generatePNGBytes(50, 50)
-		// Field named 'wrong_field' instead of 'image'
 		body, contentType, err := createMultipartRequest("wrong_field", "avatar.png", pngBytes)
 		if err != nil {
 			t.Fatalf("failed to create multipart request: %v", err)
@@ -153,6 +184,28 @@ func TestImageController_Upload(t *testing.T) {
 
 		if rec.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("expected status 422, got %d", rec.Code)
+		}
+	})
+
+	t.Run("should return 500 Internal Server Error when repository fails", func(t *testing.T) {
+		failingRepo := &mockRepository{createImageErr: errors.New("db down")}
+		failingSvc := service.NewImageService(tempStorage, failingRepo)
+		failingCtrl := controller.NewImageController(failingSvc)
+
+		pngBytes := generatePNGBytes(50, 50)
+		body, contentType, err := createMultipartRequest("image", "avatar.png", pngBytes)
+		if err != nil {
+			t.Fatalf("failed to create multipart request: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/images", body)
+		req.Header.Set("Content-Type", contentType)
+		rec := httptest.NewRecorder()
+
+		failingCtrl.Upload(rec, req)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected status 500, got %d", rec.Code)
 		}
 	})
 }

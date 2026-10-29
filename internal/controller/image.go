@@ -41,7 +41,8 @@ func (c *ImageController) Upload(w http.ResponseWriter, r *http.Request) {
 		Body:     file,
 	}
 
-	if err := c.imageService.ValidateUpload(r.Context(), input); err != nil {
+	result, err := c.imageService.Upload(r.Context(), input)
+	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrFileTooLarge):
 			SendError(w, http.StatusRequestEntityTooLarge, err.Error())
@@ -50,15 +51,11 @@ func (c *ImageController) Upload(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, service.ErrInvalidImage), errors.Is(err, service.ErrInvalidDimensions):
 			SendError(w, http.StatusUnprocessableEntity, err.Error())
 		default:
-			SendError(w, http.StatusBadRequest, err.Error())
+			SendError(w, http.StatusInternalServerError, "failed to process image upload")
 		}
 		return
 	}
 
-	SendSuccess(w, http.StatusOK, map[string]any{
-		"message": "image accepted",
-		"format":  input.DetectedFormat,
-		"width":   input.Width,
-		"height":  input.Height,
-	})
+	// Return 202 Accepted with generated identifiers and pending status
+	SendSuccess(w, http.StatusAccepted, result)
 }
