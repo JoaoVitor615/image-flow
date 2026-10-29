@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"testing"
 
 	"github.com/JoaoVitor615/image-flow/internal/domain"
@@ -46,8 +47,11 @@ func createTestJPEG(width, height int) *bytes.Reader {
 type mockRepository struct {
 	createdImage *domain.Image
 	createdJob   *domain.Job
+	storedImage  *domain.Image
+	variants     []domain.ImageVariant
 	createImgErr error
 	createJobErr error
+	getImageErr  error
 }
 
 func (m *mockRepository) CreateImage(ctx context.Context, img *domain.Image) error {
@@ -66,6 +70,20 @@ func (m *mockRepository) CreateJob(ctx context.Context, job *domain.Job) error {
 	job.ID = uuid.New()
 	m.createdJob = job
 	return nil
+}
+
+func (m *mockRepository) GetImageByID(ctx context.Context, id uuid.UUID) (*domain.Image, error) {
+	if m.getImageErr != nil {
+		return nil, m.getImageErr
+	}
+	if m.storedImage != nil {
+		return m.storedImage, nil
+	}
+	return nil, service.ErrNotFound
+}
+
+func (m *mockRepository) GetVariantsByImageID(ctx context.Context, imageID uuid.UUID) ([]domain.ImageVariant, error) {
+	return m.variants, nil
 }
 
 func TestValidationPipeline(t *testing.T) {
@@ -267,6 +285,116 @@ func TestImageService_Upload(t *testing.T) {
 		_, err := svc.Upload(ctx, input)
 		if err == nil {
 			t.Fatal("expected error from failed job insert, got nil")
+		}
+	})
+}
+
+func TestImageService_GetImageFile(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	strg, err := storage.NewDiskStorage(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create storage: %v", err)
+	}
+
+	// Save test original image to storage
+	pngReader := createTestPNG(60, 40)
+	origPath, err := strg.SaveOriginal("test-orig.png", pngReader)
+	if err != nil {
+		t.Fatalf("failed to save original: %v", err)
+	}
+
+	// Save test variant image to storage
+	webpBytes := []byte("fake webp variant bytes")
+	variantPath, err := strg.SaveVariant("thumb.webp", bytes.NewReader(webpBytes))
+	if err != nil {
+		t.Fatalf("failed to save variant: %v", err)
+	}
+
+	imgID := uuid.New()
+	sampleRecord := &domain.Image{
+		ID:             imgID,
+		OriginalPath:   origPath,
+		OriginalFormat: "png",
+		Width:          60,
+		Height:         40,
+		FileSizeBytes:  int64(pngReader.Len()),
+	}
+
+	sampleVariants := []domain.ImageVariant{
+		{
+			ID:            uuid.New(),
+			ImageID:       imgID,
+			SizeType:      "thumbnail",
+			Format:        "webp",
+			Path:          variantPath,
+			Width:         60,
+			Height:        40,
+			FileSizeBytes: int64(len(webpBytes)),
+		},
+	}
+
+	t.Run("should return original file when no format is specified", func(t *testing.T) {
+		repo := &mockRepository{storedImage: sampleRecord}
+		svc := service.NewImageService(strg, repo)
+
+		rc, mimeType, err := svc.GetImageFile(ctx, imgID, "")
+		if err != nil {
+			t.Fatalf("expected success, got %v", err)
+		}
+		defer rc.Close()
+
+		if mimeType != "image/png" {
+			t.Fatalf("expected mime image/png, got %s", mimeType)
+		}
+		content, _ := io.ReadAll(rc)
+		if len(content) == 0 {
+			t.Fatal("expected non-empty content")
+		}
+	})
+
+	t.Run("should return pre-generated variant when format exists in variants", func(t *testing.T) {
+		repo := &mockRepository{
+			storedImage: sampleRecord,
+			variants:    sampleVariants,
+		}
+		svc := service.NewImageService(strg, repo)
+
+		rc, mimeType, err := svc.GetImageFile(ctx, imgID, "webp")
+		if err != nil {
+			t.Fatalf("expected success, got %v", err)
+		}
+		defer rc.Close()
+
+		if mimeType != "image/webp" {
+			t.Fatalf("expected mime image/webp, got %s", mimeType)
+		}
+		content, _ := io.ReadAll(rc)
+		if !bytes.Equal(content, webpBytes) {
+			t.Fatalf("expected variant bytes, got %s", content)
+		}
+	})
+
+	t.Run("should return ErrVariantNotFound when format has not been generated", func(t *testing.T) {
+		repo := &mockRepository{
+			storedImage: sampleRecord,
+			variants:    sampleVariants, // only has webp, not jpeg
+		}
+		svc := service.NewImageService(strg, repo)
+
+		_, _, err := svc.GetImageFile(ctx, imgID, "jpeg")
+		if !errors.Is(err, service.ErrVariantNotFound) {
+			t.Fatalf("expected ErrVariantNotFound, got %v", err)
+		}
+	})
+
+	t.Run("should return error when image is not found in database", func(t *testing.T) {
+		repo := &mockRepository{storedImage: nil}
+		svc := service.NewImageService(strg, repo)
+
+		_, _, err := svc.GetImageFile(ctx, uuid.New(), "")
+		if !errors.Is(err, service.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound, got %v", err)
 		}
 	})
 }

@@ -2,10 +2,12 @@ package service
 
 import "errors"
 
-// Sentinel errors for image processing and validation
+// Sentinel errors for image processing, storage, and validation
 var (
-	ErrFileTooLarge      = errors.New("file size exceeds maximum allowed limit")
-	ErrUnsupportedFormat = errors.New("unsupported image format (only JPEG, PNG, and WebP are allowed)")
-	ErrInvalidImage      = errors.New("corrupted or unreadable image file")
-	ErrInvalidDimensions = errors.New("image dimensions are invalid or exceed allowed limits")
+	ErrFileTooLarge       = errors.New("file size exceeds maximum allowed limit")
+	ErrUnsupportedFormat  = errors.New("unsupported image format (only JPEG, PNG, and WebP are allowed)")
+	ErrInvalidImage       = errors.New("corrupted or unreadable image file")
+	ErrInvalidDimensions  = errors.New("image dimensions are invalid or exceed allowed limits")
+	ErrNotFound           = errors.New("image not found")
+	ErrVariantNotFound    = errors.New("requested image format is not available")
 )
