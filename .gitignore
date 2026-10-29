@@ -1,1 +1,11 @@
+# Binaries
 *.exe
+bin/
+
+# Environment and local data
+.env
+
+# Test coverage
+coverage*
+*.out
+*.html

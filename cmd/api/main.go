@@ -1,23 +1,28 @@
 package main
 
 import (
+	"context"
 	"log"
-	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/JoaoVitor615/image-flow/internal"
+	"github.com/JoaoVitor615/image-flow/internal/config"
 )
 
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cfg := config.Load()
+
+	server, err := internal.NewServer(ctx, cfg)
+	if err != nil {
+		log.Fatalf("Failed to initialize server: %v", err)
 	}
 
-	server := internal.NewServer()
-
-	log.Printf("API server running on port %s", port)
-	if err := http.ListenAndServe(":"+port, server.Routes()); err != nil {
-		log.Fatalf("Server failed to start: %v", err)
+	if err := server.Run(ctx); err != nil {
+		log.Fatalf("Server terminated with error: %v", err)
 	}
 }
