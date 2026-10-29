@@ -102,7 +102,7 @@ func TestImageController_Upload(t *testing.T) {
 	}
 
 	repo := &mockRepository{}
-	imageService := service.NewImageService(tempStorage, repo)
+	imageService := service.NewImageService(tempStorage, repo, nil)
 	ctrl := controller.NewImageController(imageService)
 
 	t.Run("should return 202 Accepted when uploading a valid PNG image", func(t *testing.T) {
@@ -208,7 +208,7 @@ func TestImageController_Upload(t *testing.T) {
 
 	t.Run("should return 500 Internal Server Error when repository fails", func(t *testing.T) {
 		failingRepo := &mockRepository{createImageErr: errors.New("db down")}
-		failingSvc := service.NewImageService(tempStorage, failingRepo)
+		failingSvc := service.NewImageService(tempStorage, failingRepo, nil)
 		failingCtrl := controller.NewImageController(failingSvc)
 
 		pngBytes := generatePNGBytes(50, 50)
@@ -274,7 +274,7 @@ func TestImageController_GetImage(t *testing.T) {
 		storedImage: sampleImage,
 		variants:    sampleVariants,
 	}
-	svc := service.NewImageService(tempStorage, repo)
+	svc := service.NewImageService(tempStorage, repo, nil)
 	ctrl := controller.NewImageController(svc)
 
 	router := chi.NewRouter()
@@ -338,7 +338,7 @@ func TestImageController_GetImage(t *testing.T) {
 
 	t.Run("should return 404 Not Found when image does not exist", func(t *testing.T) {
 		emptyRepo := &mockRepository{storedImage: nil}
-		emptyCtrl := controller.NewImageController(service.NewImageService(tempStorage, emptyRepo))
+		emptyCtrl := controller.NewImageController(service.NewImageService(tempStorage, emptyRepo, nil))
 		r := chi.NewRouter()
 		r.Get("/images/{id}", emptyCtrl.GetImage)
 

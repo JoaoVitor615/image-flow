@@ -10,6 +10,7 @@ import (
 
 	"github.com/JoaoVitor615/image-flow/internal/config"
 	"github.com/JoaoVitor615/image-flow/internal/controller"
+	"github.com/JoaoVitor615/image-flow/internal/queue"
 	"github.com/JoaoVitor615/image-flow/internal/repository"
 	"github.com/JoaoVitor615/image-flow/internal/service"
 	"github.com/JoaoVitor615/image-flow/internal/storage"
@@ -22,6 +23,7 @@ import (
 type Server struct {
 	httpServer *http.Server
 	pool       *pgxpool.Pool
+	producer   queue.EventProducer
 	port       string
 }
 
@@ -52,9 +54,13 @@ func NewServer(ctx context.Context, cfg *config.Config) (*Server, error) {
 	}
 	log.Printf("Storage initialized at: %s", cfg.StorageBasePath)
 
+	// Initialize message queue producer
+	kafkaProducer := queue.NewKafkaProducer(cfg.KafkaBrokers, cfg.KafkaTopic)
+	log.Printf("Kafka producer initialized for topic: %s", cfg.KafkaTopic)
+
 	// Assemble layered architecture
 	repo := repository.NewRepository(pool)
-	imageService := service.NewImageService(diskStorage, repo)
+	imageService := service.NewImageService(diskStorage, repo, kafkaProducer)
 	imageController := controller.NewImageController(imageService)
 
 	// Router and middleware stack
@@ -73,6 +79,7 @@ func NewServer(ctx context.Context, cfg *config.Config) (*Server, error) {
 	return &Server{
 		httpServer: httpServer,
 		pool:       pool,
+		producer:   kafkaProducer,
 		port:       cfg.Port,
 	}, nil
 }
@@ -90,6 +97,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case err := <-serverErr:
+		if s.producer != nil {
+			_ = s.producer.Close()
+		}
 		s.pool.Close()
 		return err
 	case <-ctx.Done():
@@ -99,6 +109,11 @@ func (s *Server) Run(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	if s.producer != nil {
+		if err := s.producer.Close(); err != nil {
+			log.Printf("Error closing Kafka producer: %v", err)
+		}
+	}
 	defer s.pool.Close()
 
 	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {

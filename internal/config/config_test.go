@@ -17,6 +17,8 @@ func TestConfigLoad_Defaults(t *testing.T) {
 	os.Unsetenv("DB_USER")
 	os.Unsetenv("DB_PASSWORD")
 	os.Unsetenv("DB_NAME")
+	os.Unsetenv("KAFKA_BROKERS")
+	os.Unsetenv("KAFKA_TOPIC")
 
 	cfg := config.Load()
 
@@ -30,12 +32,20 @@ func TestConfigLoad_Defaults(t *testing.T) {
 	if cfg.DatabaseURL != expectedDB {
 		t.Fatalf("expected default db url %s, got %s", expectedDB, cfg.DatabaseURL)
 	}
+	if len(cfg.KafkaBrokers) != 1 || cfg.KafkaBrokers[0] != "localhost:9092" {
+		t.Fatalf("expected default kafka broker localhost:9092, got %v", cfg.KafkaBrokers)
+	}
+	if cfg.KafkaTopic != "image-uploaded" {
+		t.Fatalf("expected default kafka topic image-uploaded, got %s", cfg.KafkaTopic)
+	}
 }
 
 func TestConfigLoad_CustomEnv(t *testing.T) {
 	t.Setenv("PORT", "9000")
 	t.Setenv("STORAGE_BASE_PATH", "/custom/storage")
 	t.Setenv("DATABASE_URL", "postgres://user:pass@remote:5433/prod?sslmode=require")
+	t.Setenv("KAFKA_BROKERS", "broker1:9092, broker2:9092")
+	t.Setenv("KAFKA_TOPIC", "custom-topic")
 
 	cfg := config.Load()
 
@@ -47,5 +57,11 @@ func TestConfigLoad_CustomEnv(t *testing.T) {
 	}
 	if cfg.DatabaseURL != "postgres://user:pass@remote:5433/prod?sslmode=require" {
 		t.Fatalf("unexpected custom db url: %s", cfg.DatabaseURL)
+	}
+	if len(cfg.KafkaBrokers) != 2 || cfg.KafkaBrokers[0] != "broker1:9092" || cfg.KafkaBrokers[1] != "broker2:9092" {
+		t.Fatalf("expected custom kafka brokers [broker1:9092, broker2:9092], got %v", cfg.KafkaBrokers)
+	}
+	if cfg.KafkaTopic != "custom-topic" {
+		t.Fatalf("expected custom kafka topic custom-topic, got %s", cfg.KafkaTopic)
 	}
 }
