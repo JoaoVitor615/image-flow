@@ -98,6 +98,10 @@ func (m *mockProducer) PublishImageUploaded(ctx context.Context, event domain.Im
 	return nil
 }
 
+func (m *mockProducer) Close() error {
+	return nil
+}
+
 func TestValidationPipeline(t *testing.T) {
 	svc := service.NewImageService(nil, nil, nil)
 	ctx := context.Background()

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/JoaoVitor615/image-flow/internal/domain"
+	"github.com/JoaoVitor615/image-flow/internal/queue"
 	"github.com/JoaoVitor615/image-flow/internal/storage"
 	"github.com/google/uuid"
 )
@@ -18,11 +19,6 @@ type Repository interface {
 	CreateJob(ctx context.Context, job *domain.Job) error
 	GetImageByID(ctx context.Context, id uuid.UUID) (*domain.Image, error)
 	GetVariantsByImageID(ctx context.Context, imageID uuid.UUID) ([]domain.ImageVariant, error)
-}
-
-// EventProducer defines publishing capabilities for domain events
-type EventProducer interface {
-	PublishImageUploaded(ctx context.Context, event domain.ImageUploadedEvent) error
 }
 
 // UploadResult contains the generated identifiers and initial status of an upload
@@ -36,12 +32,12 @@ type UploadResult struct {
 type ImageService struct {
 	storage  storage.Storage
 	repo     Repository
-	producer EventProducer
+	producer queue.EventProducer
 	rules    []ValidationRule
 }
 
 // NewImageService initializes an ImageService configured with storage, repository, producer, and validation rules
-func NewImageService(storage storage.Storage, repo Repository, producer EventProducer) *ImageService {
+func NewImageService(storage storage.Storage, repo Repository, producer queue.EventProducer) *ImageService {
 	return &ImageService{
 		storage:  storage,
 		repo:     repo,
