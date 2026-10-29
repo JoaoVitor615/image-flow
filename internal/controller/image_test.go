@@ -51,7 +51,7 @@ func generatePNGBytes(width, height int) []byte {
 }
 
 func TestImageController_Upload(t *testing.T) {
-	imageService := service.NewImageService()
+	imageService := service.NewImageService(nil, nil)
 	ctrl := controller.NewImageController(imageService)
 
 	t.Run("should return 200 OK when uploading a valid PNG image", func(t *testing.T) {

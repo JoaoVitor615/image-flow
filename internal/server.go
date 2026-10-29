@@ -16,8 +16,8 @@ type Server struct {
 
 // NewServer wires services, controllers, and registers HTTP routes
 func NewServer() *Server {
-	// Initialize domain service and HTTP controller
-	imageService := service.NewImageService()
+	// Initialize domain service and HTTP controller (TODO Storage and DB)
+	imageService := service.NewImageService(nil, nil)
 	imageController := controller.NewImageController(imageService)
 
 	r := chi.NewRouter()

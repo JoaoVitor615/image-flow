@@ -10,7 +10,10 @@ import (
 	"image/png"
 	"testing"
 
+	"github.com/JoaoVitor615/image-flow/internal/domain"
 	"github.com/JoaoVitor615/image-flow/internal/service"
+	"github.com/JoaoVitor615/image-flow/internal/storage"
+	"github.com/google/uuid"
 )
 
 // helper to create a valid in-memory PNG image
@@ -39,8 +42,34 @@ func createTestJPEG(width, height int) *bytes.Reader {
 	return bytes.NewReader(buf.Bytes())
 }
 
+// mock repository for testing ImageService persistence
+type mockRepository struct {
+	createdImage *domain.Image
+	createdJob   *domain.Job
+	createImgErr error
+	createJobErr error
+}
+
+func (m *mockRepository) CreateImage(ctx context.Context, img *domain.Image) error {
+	if m.createImgErr != nil {
+		return m.createImgErr
+	}
+	img.ID = uuid.New()
+	m.createdImage = img
+	return nil
+}
+
+func (m *mockRepository) CreateJob(ctx context.Context, job *domain.Job) error {
+	if m.createJobErr != nil {
+		return m.createJobErr
+	}
+	job.ID = uuid.New()
+	m.createdJob = job
+	return nil
+}
+
 func TestValidationPipeline(t *testing.T) {
-	svc := service.NewImageService()
+	svc := service.NewImageService(nil, nil)
 	ctx := context.Background()
 
 	t.Run("should succeed with a valid PNG image", func(t *testing.T) {
@@ -128,7 +157,6 @@ func TestValidationPipeline(t *testing.T) {
 	})
 
 	t.Run("should fail with corrupted image body", func(t *testing.T) {
-		// Valid PNG magic bytes followed by garbage
 		corrupted := append([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, []byte("not_a_real_png")...)
 		input := &service.UploadInput{
 			Filename: "corrupted.png",
@@ -139,6 +167,106 @@ func TestValidationPipeline(t *testing.T) {
 		err := svc.ValidateUpload(ctx, input)
 		if !errors.Is(err, service.ErrInvalidImage) {
 			t.Fatalf("expected ErrInvalidImage, got %v", err)
+		}
+	})
+}
+
+func TestImageService_Upload(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("should successfully save to storage and persist image and job", func(t *testing.T) {
+		strg, err := storage.NewDiskStorage(t.TempDir())
+		if err != nil {
+			t.Fatalf("failed to create test storage: %v", err)
+		}
+
+		repo := &mockRepository{}
+		svc := service.NewImageService(strg, repo)
+
+		reader := createTestPNG(120, 80)
+		input := &service.UploadInput{
+			Filename: "product.png",
+			Size:     int64(reader.Len()),
+			Body:     reader,
+		}
+
+		result, err := svc.Upload(ctx, input)
+		if err != nil {
+			t.Fatalf("expected successful upload, got %v", err)
+		}
+
+		if result == nil {
+			t.Fatal("expected non-nil upload result")
+		}
+		if result.ImageID == uuid.Nil {
+			t.Fatal("expected valid ImageID, got nil UUID")
+		}
+		if result.JobID == uuid.Nil {
+			t.Fatal("expected valid JobID, got nil UUID")
+		}
+		if result.Status != "pending" {
+			t.Fatalf("expected status 'pending', got '%s'", result.Status)
+		}
+
+		// Verify repository received records
+		if repo.createdImage == nil {
+			t.Fatal("expected image record to be created in repository")
+		}
+		if repo.createdImage.Width != 120 || repo.createdImage.Height != 80 {
+			t.Fatalf("expected 120x80, got %dx%d", repo.createdImage.Width, repo.createdImage.Height)
+		}
+		if repo.createdImage.OriginalFormat != "png" {
+			t.Fatalf("expected format 'png', got '%s'", repo.createdImage.OriginalFormat)
+		}
+
+		if repo.createdJob == nil {
+			t.Fatal("expected job record to be created in repository")
+		}
+		if repo.createdJob.ImageID != repo.createdImage.ID {
+			t.Fatalf("expected job to link to image ID %s, got %s", repo.createdImage.ID, repo.createdJob.ImageID)
+		}
+		if repo.createdJob.Status != "pending" {
+			t.Fatalf("expected job status 'pending', got '%s'", repo.createdJob.Status)
+		}
+	})
+
+	t.Run("should fail when database image insert fails", func(t *testing.T) {
+		strg, _ := storage.NewDiskStorage(t.TempDir())
+		repo := &mockRepository{
+			createImgErr: errors.New("db error"),
+		}
+		svc := service.NewImageService(strg, repo)
+
+		reader := createTestPNG(50, 50)
+		input := &service.UploadInput{
+			Filename: "product.png",
+			Size:     int64(reader.Len()),
+			Body:     reader,
+		}
+
+		_, err := svc.Upload(ctx, input)
+		if err == nil {
+			t.Fatal("expected error from failed db insert, got nil")
+		}
+	})
+
+	t.Run("should fail when database job insert fails", func(t *testing.T) {
+		strg, _ := storage.NewDiskStorage(t.TempDir())
+		repo := &mockRepository{
+			createJobErr: errors.New("db error"),
+		}
+		svc := service.NewImageService(strg, repo)
+
+		reader := createTestPNG(50, 50)
+		input := &service.UploadInput{
+			Filename: "product.png",
+			Size:     int64(reader.Len()),
+			Body:     reader,
+		}
+
+		_, err := svc.Upload(ctx, input)
+		if err == nil {
+			t.Fatal("expected error from failed job insert, got nil")
 		}
 	})
 }
