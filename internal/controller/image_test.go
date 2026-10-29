@@ -16,14 +16,19 @@ import (
 
 	"github.com/JoaoVitor615/image-flow/internal/controller"
 	"github.com/JoaoVitor615/image-flow/internal/domain"
+	"github.com/JoaoVitor615/image-flow/internal/repository"
 	"github.com/JoaoVitor615/image-flow/internal/service"
 	"github.com/JoaoVitor615/image-flow/internal/storage"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
 type mockRepository struct {
 	createImageErr error
 	createJobErr   error
+	getImageErr    error
+	storedImage    *domain.Image
+	variants       []domain.ImageVariant
 }
 
 func (m *mockRepository) CreateImage(ctx context.Context, img *domain.Image) error {
@@ -40,6 +45,20 @@ func (m *mockRepository) CreateJob(ctx context.Context, job *domain.Job) error {
 	}
 	job.ID = uuid.New()
 	return nil
+}
+
+func (m *mockRepository) GetImageByID(ctx context.Context, id uuid.UUID) (*domain.Image, error) {
+	if m.getImageErr != nil {
+		return nil, m.getImageErr
+	}
+	if m.storedImage != nil {
+		return m.storedImage, nil
+	}
+	return nil, repository.ErrNotFound
+}
+
+func (m *mockRepository) GetVariantsByImageID(ctx context.Context, imageID uuid.UUID) ([]domain.ImageVariant, error) {
+	return m.variants, nil
 }
 
 // helper to build a multipart request buffer with a specific field and file payload
@@ -206,6 +225,130 @@ func TestImageController_Upload(t *testing.T) {
 
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("expected status 500, got %d", rec.Code)
+		}
+	})
+}
+
+func TestImageController_GetImage(t *testing.T) {
+	tempStorage, err := storage.NewDiskStorage(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create temp storage: %v", err)
+	}
+
+	pngBytes := generatePNGBytes(40, 30)
+	savedPath, err := tempStorage.SaveOriginal("sample.png", bytes.NewReader(pngBytes))
+	if err != nil {
+		t.Fatalf("failed to save sample: %v", err)
+	}
+
+	webpBytes := []byte("fake webp bytes")
+	variantPath, err := tempStorage.SaveVariant("thumb.webp", bytes.NewReader(webpBytes))
+	if err != nil {
+		t.Fatalf("failed to save variant: %v", err)
+	}
+
+	validID := uuid.New()
+	sampleImage := &domain.Image{
+		ID:             validID,
+		OriginalPath:   savedPath,
+		OriginalFormat: "png",
+		Width:          40,
+		Height:         30,
+		FileSizeBytes:  int64(len(pngBytes)),
+	}
+
+	sampleVariants := []domain.ImageVariant{
+		{
+			ID:            uuid.New(),
+			ImageID:       validID,
+			SizeType:      "thumbnail",
+			Format:        "webp",
+			Path:          variantPath,
+			Width:         40,
+			Height:        30,
+			FileSizeBytes: int64(len(webpBytes)),
+		},
+	}
+
+	repo := &mockRepository{
+		storedImage: sampleImage,
+		variants:    sampleVariants,
+	}
+	svc := service.NewImageService(tempStorage, repo)
+	ctrl := controller.NewImageController(svc)
+
+	router := chi.NewRouter()
+	router.Get("/images/{id}", ctrl.GetImage)
+
+	t.Run("should return 200 OK with original image binary", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/images/"+validID.String(), nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
+		}
+		if contentType := rec.Header().Get("Content-Type"); contentType != "image/png" {
+			t.Fatalf("expected image/png, got %s", contentType)
+		}
+		if rec.Body.Len() == 0 {
+			t.Fatal("expected non-empty image content")
+		}
+	})
+
+	t.Run("should return 200 OK with pre-generated variant", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/images/"+validID.String()+"?format=webp", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
+		}
+		if contentType := rec.Header().Get("Content-Type"); contentType != "image/webp" {
+			t.Fatalf("expected image/webp, got %s", contentType)
+		}
+		if !bytes.Equal(rec.Body.Bytes(), webpBytes) {
+			t.Fatalf("expected variant bytes, got %s", rec.Body.String())
+		}
+	})
+
+	t.Run("should return 404 Not Found when requested format variant has not been generated", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/images/"+validID.String()+"?format=jpeg", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d", rec.Code)
+		}
+	})
+
+	t.Run("should return 400 Bad Request for invalid UUID parameter", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/images/not-a-uuid", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400, got %d", rec.Code)
+		}
+	})
+
+	t.Run("should return 404 Not Found when image does not exist", func(t *testing.T) {
+		emptyRepo := &mockRepository{storedImage: nil}
+		emptyCtrl := controller.NewImageController(service.NewImageService(tempStorage, emptyRepo))
+		r := chi.NewRouter()
+		r.Get("/images/{id}", emptyCtrl.GetImage)
+
+		req := httptest.NewRequest(http.MethodGet, "/images/"+uuid.New().String(), nil)
+		rec := httptest.NewRecorder()
+
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d", rec.Code)
 		}
 	})
 }

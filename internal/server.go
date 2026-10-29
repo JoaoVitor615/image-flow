@@ -63,6 +63,7 @@ func NewServer(ctx context.Context, cfg *config.Config) (*Server, error) {
 	router.Use(middleware.Recoverer)
 
 	router.Post("/images", imageController.Upload)
+	router.Get("/images/{id}", imageController.GetImage)
 
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.Port,
