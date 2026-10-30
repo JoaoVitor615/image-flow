@@ -66,6 +66,7 @@ func (m *mockRepository) CreateVariants(ctx context.Context, variants []domain.I
 }
 
 type mockStorage struct {
+	mu             sync.Mutex
 	openReader     io.ReadCloser
 	openErr        error
 	saveVariantErr error
@@ -77,6 +78,8 @@ func (m *mockStorage) SaveOriginal(filename string, r io.Reader) (string, error)
 }
 
 func (m *mockStorage) SaveVariant(filename string, r io.Reader) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.saveVariantErr != nil {
 		return "", m.saveVariantErr
 	}
@@ -89,6 +92,8 @@ func (m *mockStorage) SaveVariant(filename string, r io.Reader) (string, error) 
 }
 
 func (m *mockStorage) Open(path string) (io.ReadCloser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.openErr != nil {
 		return nil, m.openErr
 	}
