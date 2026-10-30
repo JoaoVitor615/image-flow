@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 )
 
 type mockRepository struct {
+	mu                sync.Mutex
 	job               *domain.Job
 	getJobErr         error
 	updateJobErr      error
@@ -27,6 +30,8 @@ type mockRepository struct {
 }
 
 func (m *mockRepository) GetJobByID(ctx context.Context, id uuid.UUID) (*domain.Job, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.getJobErr != nil {
 		return nil, m.getJobErr
 	}
@@ -34,6 +39,8 @@ func (m *mockRepository) GetJobByID(ctx context.Context, id uuid.UUID) (*domain.
 }
 
 func (m *mockRepository) UpdateJob(ctx context.Context, id uuid.UUID, status string, attempts int, errorMessage *string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.updateJobErr != nil {
 		return m.updateJobErr
 	}
@@ -49,6 +56,8 @@ func (m *mockRepository) UpdateJob(ctx context.Context, id uuid.UUID, status str
 }
 
 func (m *mockRepository) CreateVariants(ctx context.Context, variants []domain.ImageVariant) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.createVariantsErr != nil {
 		return m.createVariantsErr
 	}
@@ -99,6 +108,7 @@ func (m *mockProcessor) ProcessVariants(r io.Reader) ([]processor.ProcessedVaria
 }
 
 type mockConsumer struct {
+	mu            sync.Mutex
 	eventsToFetch []*domain.ImageUploadedEvent
 	fetchErr      error
 	committedMsgs []kafka.Message
@@ -107,6 +117,8 @@ type mockConsumer struct {
 }
 
 func (m *mockConsumer) FetchImageUploaded(ctx context.Context) (*domain.ImageUploadedEvent, kafka.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.fetchErr != nil {
 		return nil, kafka.Message{}, m.fetchErr
 	}
@@ -120,6 +132,8 @@ func (m *mockConsumer) FetchImageUploaded(ctx context.Context) (*domain.ImageUpl
 }
 
 func (m *mockConsumer) Commit(ctx context.Context, msg kafka.Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.commitErr != nil {
 		return m.commitErr
 	}
@@ -186,7 +200,7 @@ func TestImageWorker_ProcessEvent(t *testing.T) {
 
 	t.Run("should successfully process all variants, persist them and mark job completed", func(t *testing.T) {
 		_, event, repo, storage, proc := setupMocks()
-		w := worker.NewImageWorker(nil, repo, storage, proc)
+		w := worker.NewImageWorker(nil, repo, storage, proc, 5)
 
 		err := w.ProcessEvent(ctx, event)
 		if err != nil {
@@ -210,7 +224,7 @@ func TestImageWorker_ProcessEvent(t *testing.T) {
 	t.Run("should fail if job cannot be retrieved from repository", func(t *testing.T) {
 		_, event, repo, storage, proc := setupMocks()
 		repo.getJobErr = errors.New("db error")
-		w := worker.NewImageWorker(nil, repo, storage, proc)
+		w := worker.NewImageWorker(nil, repo, storage, proc, 5)
 
 		err := w.ProcessEvent(ctx, event)
 		if err == nil {
@@ -221,7 +235,7 @@ func TestImageWorker_ProcessEvent(t *testing.T) {
 	t.Run("should fail and update status to pending when storage open fails and attempts < max", func(t *testing.T) {
 		job, event, repo, storage, proc := setupMocks()
 		storage.openErr = errors.New("file not found")
-		w := worker.NewImageWorker(nil, repo, storage, proc)
+		w := worker.NewImageWorker(nil, repo, storage, proc, 5)
 
 		err := w.ProcessEvent(ctx, event)
 		if err == nil {
@@ -236,7 +250,7 @@ func TestImageWorker_ProcessEvent(t *testing.T) {
 		job, event, repo, storage, proc := setupMocks()
 		job.Attempts = 2 // will become 3 (max_attempts = 3)
 		proc.processErr = errors.New("corrupt image data")
-		w := worker.NewImageWorker(nil, repo, storage, proc)
+		w := worker.NewImageWorker(nil, repo, storage, proc, 5)
 
 		err := w.ProcessEvent(ctx, event)
 		if err == nil {
@@ -253,7 +267,7 @@ func TestImageWorker_ProcessEvent(t *testing.T) {
 	t.Run("should fail when saving variant to storage fails", func(t *testing.T) {
 		_, event, repo, storage, proc := setupMocks()
 		storage.saveVariantErr = errors.New("disk full")
-		w := worker.NewImageWorker(nil, repo, storage, proc)
+		w := worker.NewImageWorker(nil, repo, storage, proc, 5)
 
 		err := w.ProcessEvent(ctx, event)
 		if err == nil {
@@ -264,7 +278,7 @@ func TestImageWorker_ProcessEvent(t *testing.T) {
 	t.Run("should fail when creating variants in repository fails", func(t *testing.T) {
 		_, event, repo, storage, proc := setupMocks()
 		repo.createVariantsErr = errors.New("db error")
-		w := worker.NewImageWorker(nil, repo, storage, proc)
+		w := worker.NewImageWorker(nil, repo, storage, proc, 5)
 
 		err := w.ProcessEvent(ctx, event)
 		if err == nil {
@@ -275,7 +289,7 @@ func TestImageWorker_ProcessEvent(t *testing.T) {
 	t.Run("should fail when updating job to completed fails", func(t *testing.T) {
 		_, event, repo, storage, proc := setupMocks()
 		repo.updateJobErr = errors.New("cannot complete job")
-		w := worker.NewImageWorker(nil, repo, storage, proc)
+		w := worker.NewImageWorker(nil, repo, storage, proc, 5)
 
 		err := w.ProcessEvent(ctx, event)
 		if err == nil {
@@ -290,7 +304,7 @@ func TestImageWorker_Start(t *testing.T) {
 		cancel()
 
 		consumer := &mockConsumer{}
-		w := worker.NewImageWorker(consumer, nil, nil, nil)
+		w := worker.NewImageWorker(consumer, nil, nil, nil, 5)
 
 		err := w.Start(ctx)
 		if err != nil {
@@ -298,7 +312,7 @@ func TestImageWorker_Start(t *testing.T) {
 		}
 	})
 
-	t.Run("should process event and commit offset", func(t *testing.T) {
+	t.Run("should process event and commit offset concurrently", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -336,10 +350,10 @@ func TestImageWorker_Start(t *testing.T) {
 			},
 		}
 
-		w := worker.NewImageWorker(consumer, repo, storage, proc)
+		w := worker.NewImageWorker(consumer, repo, storage, proc, 3)
 
 		go func() {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			cancel()
 		}()
 
@@ -348,8 +362,12 @@ func TestImageWorker_Start(t *testing.T) {
 			t.Fatalf("expected nil error, got: %v", err)
 		}
 
-		if len(consumer.committedMsgs) != 1 {
-			t.Fatalf("expected 1 committed message, got: %d", len(consumer.committedMsgs))
+		consumer.mu.Lock()
+		committedCount := len(consumer.committedMsgs)
+		consumer.mu.Unlock()
+
+		if committedCount != 1 {
+			t.Fatalf("expected 1 committed message, got: %d", committedCount)
 		}
 	})
 
@@ -361,10 +379,10 @@ func TestImageWorker_Start(t *testing.T) {
 			eventsToFetch: []*domain.ImageUploadedEvent{nil},
 		}
 
-		w := worker.NewImageWorker(consumer, nil, nil, nil)
+		w := worker.NewImageWorker(consumer, nil, nil, nil, 2)
 
 		go func() {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			cancel()
 		}()
 
@@ -373,8 +391,12 @@ func TestImageWorker_Start(t *testing.T) {
 			t.Fatalf("expected nil error, got: %v", err)
 		}
 
-		if len(consumer.committedMsgs) != 1 {
-			t.Fatalf("expected malformed message to be committed, got: %d", len(consumer.committedMsgs))
+		consumer.mu.Lock()
+		committedCount := len(consumer.committedMsgs)
+		consumer.mu.Unlock()
+
+		if committedCount != 1 {
+			t.Fatalf("expected malformed message to be committed, got: %d", committedCount)
 		}
 	})
 
@@ -411,10 +433,10 @@ func TestImageWorker_Start(t *testing.T) {
 			processErr: errors.New("unrecoverable corrupt file"),
 		}
 
-		w := worker.NewImageWorker(consumer, repo, storage, proc)
+		w := worker.NewImageWorker(consumer, repo, storage, proc, 2)
 
 		go func() {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			cancel()
 		}()
 
@@ -423,8 +445,99 @@ func TestImageWorker_Start(t *testing.T) {
 			t.Fatalf("expected nil error, got: %v", err)
 		}
 
-		if len(consumer.committedMsgs) != 1 {
-			t.Fatalf("expected poisoned message to be committed after max attempts, got: %d", len(consumer.committedMsgs))
+		consumer.mu.Lock()
+		committedCount := len(consumer.committedMsgs)
+		consumer.mu.Unlock()
+
+		if committedCount != 1 {
+			t.Fatalf("expected poisoned message to be committed after max attempts, got: %d", committedCount)
 		}
 	})
+
+	t.Run("should respect bounded concurrency limit", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var activeGoroutines int64
+		var maxActiveSeen int64
+
+		concurrencyLimit := 2
+
+		// 4 events to process concurrently
+		events := make([]*domain.ImageUploadedEvent, 4)
+		for i := 0; i < 4; i++ {
+			events[i] = &domain.ImageUploadedEvent{
+				EventID:      uuid.New().String(),
+				ImageID:      uuid.New(),
+				JobID:        uuid.New(),
+				OriginalPath: "originals/sample.png",
+			}
+		}
+
+		consumer := &mockConsumer{eventsToFetch: events}
+		storage := &mockStorage{
+			openReader: io.NopCloser(bytes.NewReader([]byte("bytes"))),
+		}
+
+		slowProc := &concurrencyTrackingProcessor{
+			onProcess: func() {
+				current := atomic.AddInt64(&activeGoroutines, 1)
+				for {
+					seen := atomic.LoadInt64(&maxActiveSeen)
+					if current <= seen || atomic.CompareAndSwapInt64(&maxActiveSeen, seen, current) {
+						break
+					}
+				}
+				time.Sleep(50 * time.Millisecond)
+				atomic.AddInt64(&activeGoroutines, -1)
+			},
+		}
+
+		// Mock repository that accepts any job ID
+		flexibleRepo := &flexibleMockRepo{}
+
+		w := worker.NewImageWorker(consumer, flexibleRepo, storage, slowProc, concurrencyLimit)
+
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			cancel()
+		}()
+
+		err := w.Start(ctx)
+		if err != nil {
+			t.Fatalf("expected nil error, got: %v", err)
+		}
+
+		peak := atomic.LoadInt64(&maxActiveSeen)
+		if peak > int64(concurrencyLimit) {
+			t.Fatalf("exceeded concurrency limit! Peak was %d, limit was %d", peak, concurrencyLimit)
+		}
+	})
+}
+
+type concurrencyTrackingProcessor struct {
+	onProcess func()
+}
+
+func (c *concurrencyTrackingProcessor) ProcessVariants(r io.Reader) ([]processor.ProcessedVariant, error) {
+	c.onProcess()
+	return []processor.ProcessedVariant{
+		{SizeType: "thumb", Format: "webp", Data: []byte("d")},
+	}, nil
+}
+
+type flexibleMockRepo struct {
+	mu sync.Mutex
+}
+
+func (f *flexibleMockRepo) GetJobByID(ctx context.Context, id uuid.UUID) (*domain.Job, error) {
+	return &domain.Job{ID: id, Status: "pending", Attempts: 0, MaxAttempts: 3}, nil
+}
+
+func (f *flexibleMockRepo) UpdateJob(ctx context.Context, id uuid.UUID, status string, attempts int, errorMessage *string) error {
+	return nil
+}
+
+func (f *flexibleMockRepo) CreateVariants(ctx context.Context, variants []domain.ImageVariant) error {
+	return nil
 }

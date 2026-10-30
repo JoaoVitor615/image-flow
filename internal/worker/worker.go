@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 
 	"github.com/JoaoVitor615/image-flow/internal/domain"
 	"github.com/JoaoVitor615/image-flow/internal/processor"
 	"github.com/JoaoVitor615/image-flow/internal/queue"
 	"github.com/JoaoVitor615/image-flow/internal/storage"
 	"github.com/google/uuid"
+	"github.com/segmentio/kafka-go"
 )
 
 // Repository defines database operations required by the worker
@@ -29,24 +31,27 @@ type VariantProcessor interface {
 
 // ImageWorker orchestrates consumption of upload events, derivative generation, storage, and persistence
 type ImageWorker struct {
-	consumer  queue.EventConsumer
-	repo      Repository
-	storage   storage.Storage
-	processor VariantProcessor
+	consumer    queue.EventConsumer
+	repo        Repository
+	storage     storage.Storage
+	processor   VariantProcessor
+	concurrency int
 }
 
-// NewImageWorker creates a new ImageWorker with all required dependencies
+// NewImageWorker creates a new ImageWorker with all required dependencies and concurrency limit
 func NewImageWorker(
 	consumer queue.EventConsumer,
 	repo Repository,
 	storage storage.Storage,
 	proc VariantProcessor,
+	concurrency int,
 ) *ImageWorker {
 	return &ImageWorker{
-		consumer:  consumer,
-		repo:      repo,
-		storage:   storage,
-		processor: proc,
+		consumer:    consumer,
+		repo:        repo,
+		storage:     storage,
+		processor:   proc,
+		concurrency: concurrency,
 	}
 }
 
@@ -120,48 +125,67 @@ func (w *ImageWorker) handleFailure(ctx context.Context, job *domain.Job, proces
 	_ = w.repo.UpdateJob(ctx, job.ID, status, job.Attempts, &errMsg)
 }
 
-// Start begins the event processing loop until the context is cancelled
+// Start begins the bounded concurrent event processing loop until the context is cancelled
 func (w *ImageWorker) Start(ctx context.Context) error {
-	log.Println("Image worker started, listening for upload events...")
+	log.Printf("Image worker started with max concurrency %d, listening for upload events...", w.concurrency)
+
+	sem := make(chan struct{}, w.concurrency)
+	var wg sync.WaitGroup
 
 	for {
+		// Acquire a semaphore slot before fetching next message (true backpressure)
 		select {
 		case <-ctx.Done():
-			log.Println("Image worker received shutdown signal, stopping...")
+			log.Println("Image worker received shutdown signal, waiting for active jobs to finish...")
+			wg.Wait()
+			log.Println("All active worker jobs completed, shutting down cleanly")
 			return nil
-		default:
+		case sem <- struct{}{}:
 		}
 
+		//. Fetch next message from Kafka
 		event, msg, err := w.consumer.FetchImageUploaded(ctx)
 		if err != nil {
+			<-sem // Release slot if fetch fails
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				log.Println("Context cancelled during message fetch, waiting for active jobs...")
+				wg.Wait()
 				return nil
 			}
 			log.Printf("Error fetching event from Kafka: %v", err)
 			continue
 		}
 
-		if event == nil {
-			log.Printf("Skipping unparseable message and committing offset")
-			_ = w.consumer.Commit(ctx, msg)
-			continue
-		}
+		// Dispatch processing in a bounded goroutine
+		wg.Add(1)
+		go func(e *domain.ImageUploadedEvent, m kafka.Message) {
+			defer func() {
+				<-sem // Release semaphore slot for next message
+				wg.Done()
+			}()
 
-		log.Printf("Processing image derivatives for Job ID: %s, Image ID: %s", event.JobID, event.ImageID)
-		if err := w.ProcessEvent(ctx, event); err != nil {
-			log.Printf("Failed processing Job ID %s: %v", event.JobID, err)
-
-			job, _ := w.repo.GetJobByID(ctx, event.JobID)
-			if job != nil && job.Attempts >= job.MaxAttempts {
-				_ = w.consumer.Commit(ctx, msg)
+			if e == nil {
+				log.Printf("Skipping unparseable message and committing offset")
+				_ = w.consumer.Commit(ctx, m)
+				return
 			}
-			continue
-		}
 
-		if err := w.consumer.Commit(ctx, msg); err != nil {
-			log.Printf("Failed to commit offset for Job ID %s: %v", event.JobID, err)
-		} else {
-			log.Printf("Successfully generated derivatives and completed Job ID: %s", event.JobID)
-		}
+			log.Printf("Processing image derivatives for Job ID: %s, Image ID: %s", e.JobID, e.ImageID)
+			if err := w.ProcessEvent(ctx, e); err != nil {
+				log.Printf("Failed processing Job ID %s: %v", e.JobID, err)
+
+				job, _ := w.repo.GetJobByID(ctx, e.JobID)
+				if job != nil && job.Attempts >= job.MaxAttempts {
+					_ = w.consumer.Commit(ctx, m)
+				}
+				return
+			}
+
+			if err := w.consumer.Commit(ctx, m); err != nil {
+				log.Printf("Failed to commit offset for Job ID %s: %v", e.JobID, err)
+			} else {
+				log.Printf("Successfully generated derivatives and completed Job ID: %s", e.JobID)
+			}
+		}(event, msg)
 	}
 }
