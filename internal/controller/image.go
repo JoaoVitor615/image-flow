@@ -76,8 +76,9 @@ func (c *ImageController) GetImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetFormat := r.URL.Query().Get("format")
+	targetSize := r.URL.Query().Get("size")
 
-	content, mimeType, err := c.imageService.GetImageFile(r.Context(), id, targetFormat)
+	content, mimeType, err := c.imageService.GetImageFile(r.Context(), id, targetFormat, targetSize)
 	if err != nil {
 		switch {
 		case errors.Is(err, repository.ErrNotFound), errors.Is(err, service.ErrNotFound):

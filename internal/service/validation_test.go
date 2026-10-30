@@ -405,7 +405,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 		repo := &mockRepository{storedImage: sampleRecord}
 		svc := service.NewImageService(strg, repo, nil)
 
-		rc, mimeType, err := svc.GetImageFile(ctx, imgID, "")
+		rc, mimeType, err := svc.GetImageFile(ctx, imgID, "", "")
 		if err != nil {
 			t.Fatalf("expected success, got %v", err)
 		}
@@ -427,7 +427,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 		}
 		svc := service.NewImageService(strg, repo, nil)
 
-		rc, mimeType, err := svc.GetImageFile(ctx, imgID, "webp")
+		rc, mimeType, err := svc.GetImageFile(ctx, imgID, "webp", "")
 		if err != nil {
 			t.Fatalf("expected success, got %v", err)
 		}
@@ -442,6 +442,42 @@ func TestImageService_GetImageFile(t *testing.T) {
 		}
 	})
 
+	t.Run("should return pre-generated variant when size matches", func(t *testing.T) {
+		repo := &mockRepository{
+			storedImage: sampleRecord,
+			variants:    sampleVariants,
+		}
+		svc := service.NewImageService(strg, repo, nil)
+
+		rc, mimeType, err := svc.GetImageFile(ctx, imgID, "", "thumbnail")
+		if err != nil {
+			t.Fatalf("expected success, got %v", err)
+		}
+		defer rc.Close()
+
+		if mimeType != "image/webp" {
+			t.Fatalf("expected mime image/webp, got %s", mimeType)
+		}
+	})
+
+	t.Run("should return pre-generated variant when both size and format match", func(t *testing.T) {
+		repo := &mockRepository{
+			storedImage: sampleRecord,
+			variants:    sampleVariants,
+		}
+		svc := service.NewImageService(strg, repo, nil)
+
+		rc, mimeType, err := svc.GetImageFile(ctx, imgID, "webp", "thumbnail")
+		if err != nil {
+			t.Fatalf("expected success, got %v", err)
+		}
+		defer rc.Close()
+
+		if mimeType != "image/webp" {
+			t.Fatalf("expected mime image/webp, got %s", mimeType)
+		}
+	})
+
 	t.Run("should return ErrVariantNotFound when format has not been generated", func(t *testing.T) {
 		repo := &mockRepository{
 			storedImage: sampleRecord,
@@ -449,7 +485,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 		}
 		svc := service.NewImageService(strg, repo, nil)
 
-		_, _, err := svc.GetImageFile(ctx, imgID, "jpeg")
+		_, _, err := svc.GetImageFile(ctx, imgID, "jpeg", "")
 		if !errors.Is(err, service.ErrVariantNotFound) {
 			t.Fatalf("expected ErrVariantNotFound, got %v", err)
 		}
@@ -459,7 +495,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 		repo := &mockRepository{storedImage: nil}
 		svc := service.NewImageService(strg, repo, nil)
 
-		_, _, err := svc.GetImageFile(ctx, uuid.New(), "")
+		_, _, err := svc.GetImageFile(ctx, uuid.New(), "", "")
 		if !errors.Is(err, service.ErrNotFound) {
 			t.Fatalf("expected ErrNotFound, got %v", err)
 		}
