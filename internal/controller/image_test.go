@@ -314,6 +314,34 @@ func TestImageController_GetImage(t *testing.T) {
 		}
 	})
 
+	t.Run("should return 200 OK with pre-generated variant by size", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/images/"+validID.String()+"?size=thumbnail", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
+		}
+		if contentType := rec.Header().Get("Content-Type"); contentType != "image/webp" {
+			t.Fatalf("expected image/webp, got %s", contentType)
+		}
+	})
+
+	t.Run("should return 200 OK with pre-generated variant by size and format", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/images/"+validID.String()+"?size=thumbnail&format=webp", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
+		}
+		if contentType := rec.Header().Get("Content-Type"); contentType != "image/webp" {
+			t.Fatalf("expected image/webp, got %s", contentType)
+		}
+	})
+
 	t.Run("should return 404 Not Found when requested format variant has not been generated", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/images/"+validID.String()+"?format=jpeg", nil)
 		rec := httptest.NewRecorder()

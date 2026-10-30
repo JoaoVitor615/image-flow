@@ -32,7 +32,7 @@ jobs:
 
       - name: Run Unit Tests with Coverage
         run: |
-          go test -v -coverprofile=coverage.out ./internal/config/... ./internal/controller/... ./internal/service/... ./internal/storage/...
+          go test -v -coverprofile=coverage.out ./internal/config/... ./internal/controller/... ./internal/service/... ./internal/storage/... ./internal/queue/... ./internal/processor/... ./internal/worker/...
 
       - name: Enforce Minimum Code Coverage
         run: |

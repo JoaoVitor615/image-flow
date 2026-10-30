@@ -3,16 +3,19 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
 // Config encapsulates application configuration loaded from environment variables
 type Config struct {
-	Port            string
-	DatabaseURL     string
-	StorageBasePath string
-	KafkaBrokers    []string
-	KafkaTopic      string
+	Port              string
+	DatabaseURL       string
+	StorageBasePath   string
+	KafkaBrokers      []string
+	KafkaTopic        string
+	KafkaGroupID      string
+	WorkerConcurrency int
 }
 
 // Load initializes configuration from environment variables with default values
@@ -23,12 +26,21 @@ func Load() *Config {
 		brokers[i] = strings.TrimSpace(brokers[i])
 	}
 
+	concurrency := 5
+	if cStr := os.Getenv("WORKER_CONCURRENCY"); cStr != "" {
+		if cVal, err := strconv.Atoi(cStr); err == nil && cVal > 0 {
+			concurrency = cVal
+		}
+	}
+
 	return &Config{
-		Port:            getEnv("PORT", "8080"),
-		StorageBasePath: getEnv("STORAGE_BASE_PATH", "./data/images"),
-		DatabaseURL:     buildDatabaseURL(),
-		KafkaBrokers:    brokers,
-		KafkaTopic:      getEnv("KAFKA_TOPIC", "image-uploaded"),
+		Port:              getEnv("PORT", "8080"),
+		StorageBasePath:   getEnv("STORAGE_BASE_PATH", "./data/images"),
+		DatabaseURL:       buildDatabaseURL(),
+		KafkaBrokers:      brokers,
+		KafkaTopic:        getEnv("KAFKA_TOPIC", "image-uploaded"),
+		KafkaGroupID:      getEnv("KAFKA_GROUP_ID", "image-processing-group"),
+		WorkerConcurrency: concurrency,
 	}
 }
 
