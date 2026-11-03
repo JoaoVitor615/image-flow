@@ -25,48 +25,14 @@ When a client uploads an image, the API performs instant validations (magic numb
 ## 🏛️ Architecture & Data Flow
 
 ```mermaid
-flowchart TD
-    Client(["🌐 Client / Frontend"])
-
-    subgraph API_Service ["API Service (cmd/api)"]
-        Router["chi HTTP Router"]
-        Validator["Validation Pipeline"]
-        API_Store["Storage Handler"]
-    end
-
-    subgraph Messaging ["Event Broker"]
-        Kafka[("Apache Kafka KRaft")]
-    end
-
-    subgraph Storage_Layer ["Persistence and Storage"]
-        PG[("PostgreSQL 16")]
-        Disk[("Persistent Disk Storage")]
-    end
-
-    subgraph Worker_Service ["Worker Service (cmd/worker)"]
-        Consumer["Kafka Consumer Group"]
-        Semaphore["Bounded Concurrency Semaphore"]
-        Processor["Image Processor Engine"]
-    end
-
-    %% Flow connections
-    Client -->|"1. POST /images (multipart)"| Router
-    Router --> Validator
-    Validator --> API_Store
-    API_Store -->|"2. Save original"| Disk
-    API_Store -->|"3. Record image and pending job"| PG
-    API_Store -->|"4. Publish event"| Kafka
-    Router -.->|"5. 202 Accepted (job_id, image_id)"| Client
-
-    Kafka -->|"6. Fetch event"| Consumer
-    Consumer --> Semaphore
-    Semaphore --> Processor
-    Processor -->|"7. Save 6 derivatives"| Disk
-    Processor -->|"8. Insert variants and complete job"| PG
-    Processor -->|"9. Commit offset"| Kafka
-
-    Client -->|"10. GET /images/:id with filters"| Router
-    Router -->|"Serve pre-generated asset"| Disk
+flowchart LR
+    Client(["Client"]) -->|"Upload Image"| API["API (Go / chi)"]
+    API -->|"Save Original"| Storage[("Disk Storage")]
+    API -->|"Save Metadata"| DB[("PostgreSQL")]
+    API -->|"Publish Event"| Kafka[("Apache Kafka")]
+    Kafka -->|"Consume Event"| Worker["Background Worker"]
+    Worker -->|"Generate 6 Variants"| Storage
+    Worker -->|"Update Job & Variants"| DB
 ```
 
 ---
