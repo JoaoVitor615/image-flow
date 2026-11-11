@@ -365,15 +365,20 @@ func TestImageService_GetImageFile(t *testing.T) {
 	}
 
 	// Save test original image to storage
-	pngReader := createTestPNG(60, 40)
-	origPath, err := strg.SaveOriginal("test-orig.png", pngReader)
+	pngBytes, _ := io.ReadAll(createTestPNG(60, 40))
+	origPath, err := strg.SaveOriginal("test-orig.png", bytes.NewReader(pngBytes))
 	if err != nil {
 		t.Fatalf("failed to save original: %v", err)
 	}
 
-	// Save test variant image to storage
+	// Save test variant images to storage
 	webpBytes := []byte("fake webp variant bytes")
-	variantPath, err := strg.SaveVariant("thumb.webp", bytes.NewReader(webpBytes))
+	variantPath, err := strg.SaveVariant("orig.webp", bytes.NewReader(webpBytes))
+	if err != nil {
+		t.Fatalf("failed to save variant: %v", err)
+	}
+
+	pngThumbPath, err := strg.SaveVariant("thumb.png", bytes.NewReader(pngBytes))
 	if err != nil {
 		t.Fatalf("failed to save variant: %v", err)
 	}
@@ -385,10 +390,30 @@ func TestImageService_GetImageFile(t *testing.T) {
 		OriginalFormat: "png",
 		Width:          60,
 		Height:         40,
-		FileSizeBytes:  int64(pngReader.Len()),
+		FileSizeBytes:  int64(len(pngBytes)),
 	}
 
 	sampleVariants := []domain.ImageVariant{
+		{
+			ID:            uuid.New(),
+			ImageID:       imgID,
+			SizeType:      "original",
+			Format:        "webp",
+			Path:          variantPath,
+			Width:         60,
+			Height:        40,
+			FileSizeBytes: int64(len(webpBytes)),
+		},
+		{
+			ID:            uuid.New(),
+			ImageID:       imgID,
+			SizeType:      "thumbnail",
+			Format:        "png",
+			Path:          pngThumbPath,
+			Width:         60,
+			Height:        40,
+			FileSizeBytes: int64(len(pngBytes)),
+		},
 		{
 			ID:            uuid.New(),
 			ImageID:       imgID,
@@ -401,7 +426,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 		},
 	}
 
-	t.Run("should return original file when no format is specified", func(t *testing.T) {
+	t.Run("should return original file when no format and no size specified", func(t *testing.T) {
 		repo := &mockRepository{storedImage: sampleRecord}
 		svc := service.NewImageService(strg, repo, nil)
 
@@ -420,7 +445,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 		}
 	})
 
-	t.Run("should return pre-generated variant when format exists in variants", func(t *testing.T) {
+	t.Run("should return pre-generated original size variant when format is specified without size", func(t *testing.T) {
 		repo := &mockRepository{
 			storedImage: sampleRecord,
 			variants:    sampleVariants,
@@ -442,7 +467,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 		}
 	})
 
-	t.Run("should return pre-generated variant when size matches", func(t *testing.T) {
+	t.Run("should return pre-generated variant in original format when size is specified without format", func(t *testing.T) {
 		repo := &mockRepository{
 			storedImage: sampleRecord,
 			variants:    sampleVariants,
@@ -455,8 +480,8 @@ func TestImageService_GetImageFile(t *testing.T) {
 		}
 		defer rc.Close()
 
-		if mimeType != "image/webp" {
-			t.Fatalf("expected mime image/webp, got %s", mimeType)
+		if mimeType != "image/png" {
+			t.Fatalf("expected mime image/png, got %s", mimeType)
 		}
 	})
 
@@ -481,7 +506,7 @@ func TestImageService_GetImageFile(t *testing.T) {
 	t.Run("should return ErrVariantNotFound when format has not been generated", func(t *testing.T) {
 		repo := &mockRepository{
 			storedImage: sampleRecord,
-			variants:    sampleVariants, // only has webp, not jpeg
+			variants:    sampleVariants, // only has webp and png, not jpeg
 		}
 		svc := service.NewImageService(strg, repo, nil)
 

@@ -28,10 +28,17 @@ type VariantSpec struct {
 	Formats   []string
 }
 
-// DefaultVariantSpecs specifies the 6 derivative requirements:
+// DefaultVariantSpecs specifies the 9 derivative requirements across all size and format combinations:
+// - original: original dimensions in webp, jpeg, png
 // - thumbnail: max 200x200 (preserving aspect ratio) in webp, jpeg, png
 // - catalog: max width 800 (preserving aspect ratio) in webp, jpeg, png
 var DefaultVariantSpecs = []VariantSpec{
+	{
+		SizeType:  "original",
+		MaxWidth:  0,
+		MaxHeight: 0,
+		Formats:   []string{"webp", "jpeg", "png"},
+	},
 	{
 		SizeType:  "thumbnail",
 		MaxWidth:  200,

@@ -101,7 +101,6 @@ func (s *ImageService) Upload(ctx context.Context, input *UploadInput) (*UploadR
 
 	// Publish upload event to message broker for background variant processing
 	if s.producer != nil {
-
 		event := domain.ImageUploadedEvent{
 			EventID:        uuid.New().String(),
 			EventType:      "image.uploaded",
@@ -135,22 +134,32 @@ func (s *ImageService) GetImageFile(ctx context.Context, id uuid.UUID, targetFor
 	targetFormat = normalizeFormat(targetFormat)
 	targetSize = strings.ToLower(strings.TrimSpace(targetSize))
 
-	// Return original image if no resize is requested and format matches or is unspecified
-	if targetSize == "" && (targetFormat == "" || targetFormat == imgRecord.OriginalFormat) {
+	// Resolve defaults: when size is omitted, default to original; when format is omitted, default to original format
+	if targetSize == "" {
+		targetSize = "original"
+	}
+	if targetFormat == "" {
+		targetFormat = imgRecord.OriginalFormat
+	}
+
+	// If requesting original size in original format, stream directly from the original uploaded file
+	if targetSize == "original" && targetFormat == imgRecord.OriginalFormat {
 		return s.openImage(imgRecord.OriginalPath, imgRecord.OriginalFormat)
 	}
 
+	// Search for pre-generated variant matching requested size and format
 	variants, err := s.repo.GetVariantsByImageID(ctx, id)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to query image variants: %w", err)
 	}
 
-	matchedVariant := selectVariant(variants, targetFormat, targetSize, imgRecord.OriginalFormat)
-	if matchedVariant == nil {
-		return nil, "", ErrVariantNotFound
+	for i := range variants {
+		if variants[i].SizeType == targetSize && variants[i].Format == targetFormat {
+			return s.openImage(variants[i].Path, variants[i].Format)
+		}
 	}
 
-	return s.openImage(matchedVariant.Path, matchedVariant.Format)
+	return nil, "", ErrVariantNotFound
 }
 
 func (s *ImageService) openImage(path, format string) (io.ReadCloser, string, error) {
@@ -159,36 +168,6 @@ func (s *ImageService) openImage(path, format string) (io.ReadCloser, string, er
 		return nil, "", fmt.Errorf("failed to open stored image: %w", err)
 	}
 	return file, "image/" + format, nil
-}
-
-func selectVariant(variants []domain.ImageVariant, targetFormat, targetSize, defaultFormat string) *domain.ImageVariant {
-	var candidate *domain.ImageVariant
-
-	for i := range variants {
-		v := &variants[i]
-
-		if targetSize != "" && v.SizeType != targetSize {
-			continue
-		}
-		if targetFormat != "" && v.Format != targetFormat {
-			continue
-		}
-
-		// When format is explicitly requested, match is exact
-		if targetFormat != "" {
-			return v
-		}
-
-		// When only size is requested, prioritize original format
-		if v.Format == defaultFormat {
-			return v
-		}
-		if candidate == nil {
-			candidate = v
-		}
-	}
-
-	return candidate
 }
 
 func normalizeFormat(format string) string {

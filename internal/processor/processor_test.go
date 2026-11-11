@@ -40,19 +40,22 @@ func createTestJPEG(width, height int) []byte {
 func TestProcessVariants(t *testing.T) {
 	proc := processor.NewImageProcessor()
 
-	t.Run("should generate all 6 variants from a valid PNG image", func(t *testing.T) {
+	t.Run("should generate all 9 variants from a valid PNG image", func(t *testing.T) {
 		pngBytes := createTestPNG(1200, 800)
 		variants, err := proc.ProcessVariants(bytes.NewReader(pngBytes))
 		if err != nil {
 			t.Fatalf("expected successful variant generation, got: %v", err)
 		}
 
-		if len(variants) != 6 {
-			t.Fatalf("expected exactly 6 variants, got %d", len(variants))
+		if len(variants) != 9 {
+			t.Fatalf("expected exactly 9 variants, got %d", len(variants))
 		}
 
 		// Verify expected categories and formats
 		expectedVariants := map[string]bool{
+			"original/webp":  false,
+			"original/jpeg":  false,
+			"original/png":   false,
 			"thumbnail/webp": false,
 			"thumbnail/jpeg": false,
 			"thumbnail/png":  false,
@@ -70,6 +73,12 @@ func TestProcessVariants(t *testing.T) {
 			}
 			if v.FileSizeBytes != int64(len(v.Data)) {
 				t.Fatalf("variant %s FileSizeBytes mismatch: %d != %d", key, v.FileSizeBytes, len(v.Data))
+			}
+
+			if v.SizeType == "original" {
+				if v.Width != 1200 || v.Height != 800 {
+					t.Fatalf("expected original dimensions 1200x800 preserved, got %dx%d", v.Width, v.Height)
+				}
 			}
 
 			if v.SizeType == "thumbnail" {
@@ -97,15 +106,15 @@ func TestProcessVariants(t *testing.T) {
 		}
 	})
 
-	t.Run("should generate all 6 variants from a valid JPEG image", func(t *testing.T) {
+	t.Run("should generate all 9 variants from a valid JPEG image", func(t *testing.T) {
 		jpegBytes := createTestJPEG(100, 100)
 		variants, err := proc.ProcessVariants(bytes.NewReader(jpegBytes))
 		if err != nil {
 			t.Fatalf("expected success, got %v", err)
 		}
 
-		if len(variants) != 6 {
-			t.Fatalf("expected 6 variants, got %d", len(variants))
+		if len(variants) != 9 {
+			t.Fatalf("expected 9 variants, got %d", len(variants))
 		}
 
 		for _, v := range variants {

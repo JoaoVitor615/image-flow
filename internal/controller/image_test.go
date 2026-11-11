@@ -247,6 +247,16 @@ func TestImageController_GetImage(t *testing.T) {
 		t.Fatalf("failed to save variant: %v", err)
 	}
 
+	origWebpPath, err := tempStorage.SaveVariant("orig.webp", bytes.NewReader(webpBytes))
+	if err != nil {
+		t.Fatalf("failed to save orig variant: %v", err)
+	}
+
+	thumbPngPath, err := tempStorage.SaveVariant("thumb.png", bytes.NewReader(pngBytes))
+	if err != nil {
+		t.Fatalf("failed to save png thumb: %v", err)
+	}
+
 	validID := uuid.New()
 	sampleImage := &domain.Image{
 		ID:             validID,
@@ -258,6 +268,26 @@ func TestImageController_GetImage(t *testing.T) {
 	}
 
 	sampleVariants := []domain.ImageVariant{
+		{
+			ID:            uuid.New(),
+			ImageID:       validID,
+			SizeType:      "original",
+			Format:        "webp",
+			Path:          origWebpPath,
+			Width:         40,
+			Height:        30,
+			FileSizeBytes: int64(len(webpBytes)),
+		},
+		{
+			ID:            uuid.New(),
+			ImageID:       validID,
+			SizeType:      "thumbnail",
+			Format:        "png",
+			Path:          thumbPngPath,
+			Width:         40,
+			Height:        30,
+			FileSizeBytes: int64(len(pngBytes)),
+		},
 		{
 			ID:            uuid.New(),
 			ImageID:       validID,
@@ -314,7 +344,7 @@ func TestImageController_GetImage(t *testing.T) {
 		}
 	})
 
-	t.Run("should return 200 OK with pre-generated variant by size", func(t *testing.T) {
+	t.Run("should return 200 OK with pre-generated variant by size in original format", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/images/"+validID.String()+"?size=thumbnail", nil)
 		rec := httptest.NewRecorder()
 
@@ -323,8 +353,8 @@ func TestImageController_GetImage(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
 		}
-		if contentType := rec.Header().Get("Content-Type"); contentType != "image/webp" {
-			t.Fatalf("expected image/webp, got %s", contentType)
+		if contentType := rec.Header().Get("Content-Type"); contentType != "image/png" {
+			t.Fatalf("expected image/png, got %s", contentType)
 		}
 	})
 
