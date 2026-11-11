@@ -39,12 +39,12 @@ CREATE INDEX IF NOT EXISTS idx_jobs_image_id ON jobs (image_id);
 
 -- ==========================================
 -- 3. Image Variants Table
--- Stores metadata of the 6 generated files per image
+-- Stores metadata of the generated derivative files per image
 -- ==========================================
 CREATE TABLE IF NOT EXISTS image_variants (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         image_id UUID NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-        size_type VARCHAR(20) NOT NULL, -- 'thumbnail' or 'catalog'
+        size_type VARCHAR(20) NOT NULL, -- 'original', 'thumbnail' or 'catalog'
         format VARCHAR(10) NOT NULL,    -- 'webp', 'jpeg', or 'png'
         path TEXT NOT NULL,
         width INTEGER NOT NULL,
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS image_variants (
 
 -- Constraints for size types and formats
 CONSTRAINT chk_variant_size_type CHECK (
-    size_type IN ('thumbnail', 'catalog')
+    size_type IN ('original', 'thumbnail', 'catalog')
 ),
 CONSTRAINT chk_variant_format CHECK (
     format IN ('webp', 'jpeg', 'png')
